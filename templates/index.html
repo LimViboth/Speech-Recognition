@@ -1,0 +1,228 @@
+<!doctype html>
+<html lang="en">
+	<head>
+		<meta charset="UTF-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+		<title>Speech Command Recognition</title>
+		<style>
+			* {
+				box-sizing: border-box;
+				margin: 0;
+				padding: 0;
+			}
+			body {
+				font-family: -apple-system, "Segoe UI", Helvetica, Arial, sans-serif;
+				background: #f5f5f5;
+				color: #222;
+				min-height: 100vh;
+				display: flex;
+				justify-content: center;
+				align-items: center;
+				padding: 20px;
+			}
+			.card {
+				background: #fff;
+				border: 1px solid #ddd;
+				border-radius: 6px;
+				padding: 32px 28px;
+				width: 360px;
+				text-align: center;
+			}
+			h1 {
+				font-size: 1.1em;
+				font-weight: 600;
+				margin-bottom: 6px;
+				color: #111;
+			}
+			.desc {
+				font-size: 0.82em;
+				color: #777;
+				margin-bottom: 22px;
+			}
+			.buttons {
+				display: flex;
+				gap: 10px;
+				justify-content: center;
+				margin-bottom: 18px;
+			}
+			button {
+				padding: 9px 20px;
+				border: 1px solid #ccc;
+				border-radius: 4px;
+				font-size: 0.9em;
+				cursor: pointer;
+				font-weight: 500;
+				background: #fff;
+				color: #333;
+				transition: background 0.15s;
+			}
+			button:hover {
+				background: #f0f0f0;
+			}
+			#recBtn {
+				border-color: #c0392b;
+				color: #c0392b;
+			}
+			#recBtn:hover {
+				background: #fdf2f2;
+			}
+			#recBtn.recording {
+				background: #c0392b;
+				color: #fff;
+			}
+			#fileIn {
+				display: none;
+			}
+			.status {
+				color: #999;
+				min-height: 20px;
+				margin-bottom: 14px;
+				font-size: 0.82em;
+			}
+			.result {
+				display: none;
+				margin-top: 8px;
+			}
+			.result .word {
+				font-size: 1.6em;
+				font-weight: 600;
+				color: #222;
+				margin-bottom: 2px;
+			}
+			.result .conf {
+				color: #999;
+				font-size: 0.82em;
+			}
+			hr {
+				border: none;
+				border-top: 1px solid #eee;
+				margin: 16px 0;
+			}
+		</style>
+	</head>
+	<body>
+		<div class="card">
+			<h1>Speech Command Recognition</h1>
+			<p class="desc">Record a short clip or upload a .wav file</p>
+			<div class="buttons">
+				<button id="recBtn" onclick="toggleRec()">Record</button>
+				<button id="uplBtn" onclick="document.getElementById('fileIn').click()">
+					Upload file
+				</button>
+				<input
+					type="file"
+					id="fileIn"
+					accept="audio/*"
+					onchange="upload(event)"
+				/>
+			</div>
+			<div class="status" id="status"></div>
+			<div class="result" id="result">
+				<hr />
+				<div class="word" id="word"></div>
+				<div class="conf" id="conf"></div>
+			</div>
+		</div>
+		<script>
+			let rec = null,
+				chunks = [],
+				recording = false;
+			const stat = (s) => (document.getElementById("status").textContent = s);
+
+			async function toggleRec() {
+				const btn = document.getElementById("recBtn");
+				if (!recording) {
+					const stream = await navigator.mediaDevices.getUserMedia({
+						audio: true,
+					});
+					rec = new MediaRecorder(stream, { mimeType: "audio/webm" });
+					chunks = [];
+					rec.ondataavailable = (e) => chunks.push(e.data);
+					rec.onstop = async () => {
+						stream.getTracks().forEach((t) => t.stop());
+						stat("Processing...");
+						send(await toWav(new Blob(chunks, { type: "audio/webm" })));
+					};
+					rec.start();
+					recording = true;
+					btn.textContent = "Stop";
+					btn.classList.add("recording");
+					stat("Listening...");
+				} else {
+					rec.stop();
+					recording = false;
+					btn.textContent = "Record";
+					btn.classList.remove("recording");
+				}
+			}
+
+			async function toWav(blob) {
+				const buf = await blob.arrayBuffer();
+				const ab = await new AudioContext({
+					sampleRate: 16000,
+				}).decodeAudioData(buf);
+				const off = new OfflineAudioContext(1, ab.duration * 16000, 16000);
+				const src = off.createBufferSource();
+				src.buffer = ab;
+				src.connect(off.destination);
+				src.start(0);
+				const rend = await off.startRendering();
+				const s = rend.getChannelData(0);
+				const dl = s.length * 2,
+					b = new ArrayBuffer(44 + dl),
+					v = new DataView(b);
+				const w = (o, str) => {
+					for (let i = 0; i < str.length; i++)
+						v.setUint8(o + i, str.charCodeAt(i));
+				};
+				w(0, "RIFF");
+				v.setUint32(4, 36 + dl, true);
+				w(8, "WAVE");
+				w(12, "fmt ");
+				v.setUint32(16, 16, true);
+				v.setUint16(20, 1, true);
+				v.setUint16(22, 1, true);
+				v.setUint32(24, 16000, true);
+				v.setUint32(28, 32000, true);
+				v.setUint16(32, 2, true);
+				v.setUint16(34, 16, true);
+				w(36, "data");
+				v.setUint32(40, dl, true);
+				for (let i = 0; i < s.length; i++) {
+					const c = Math.max(-1, Math.min(1, s[i]));
+					v.setInt16(44 + i * 2, c < 0 ? c * 0x8000 : c * 0x7fff, true);
+				}
+				return new Blob([b], { type: "audio/wav" });
+			}
+
+			async function upload(e) {
+				const f = e.target.files[0];
+				if (!f) return;
+				stat("Processing...");
+				await send(f);
+				e.target.value = "";
+			}
+
+			async function send(blob) {
+				const fd = new FormData();
+				fd.append("audio", blob, "audio.wav");
+				try {
+					const r = await (
+						await fetch("/predict", { method: "POST", body: fd })
+					).json();
+					if (r.error) {
+						stat("Error: " + r.error);
+						return;
+					}
+					document.getElementById("word").textContent = r.prediction;
+					document.getElementById("conf").textContent =
+						r.confidence.toFixed(1) + "% confidence";
+					document.getElementById("result").style.display = "block";
+					stat("");
+				} catch (e) {
+					stat("Request failed");
+				}
+			}
+		</script>
+	</body>
+</html>
